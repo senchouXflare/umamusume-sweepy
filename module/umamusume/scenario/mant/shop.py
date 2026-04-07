@@ -21,7 +21,7 @@ CONTENT_X2 = 640
 PURCHASED_CHECK_X1 = 200
 PURCHASED_CHECK_X2 = 600
 MANT_SHOP_SCAN_START = 13
-MANT_SHOP_SCAN_INTERVAL = 6
+MANT_SHOP_SCAN_INTERVAL = 3
 
 MANT_SHOP_COIN_ROI = (394, 437, 525, 685)
 
@@ -832,6 +832,7 @@ def buy_shop_items(ctx, target_names, items_list, ratio, drag_ratio, first_item_
         return False, {}
 
     selected = 0
+    bought_items = Counter()  # Track what we buy
 
     scroll_to_top(ctx)
 
@@ -866,6 +867,7 @@ def buy_shop_items(ctx, target_names, items_list, ratio, drag_ratio, first_item_
                 time.sleep(0.3)
                 selected += 1
                 remaining[item_name] -= 1
+                bought_items[item_name] += 1
                 clicked_any = True
 
         if clicked_any:
@@ -913,10 +915,21 @@ def buy_shop_items(ctx, target_names, items_list, ratio, drag_ratio, first_item_
                 exchange_ready = True
                 break
 
+    # Update inventory memory with bought items
+    if exchange_ready and bought_items:
+        owned = getattr(ctx.cultivate_detail, 'mant_owned_items', [])
+        owned_map = {n: q for n, q in owned}
+        for item_name, qty in bought_items.items():
+            owned_map[item_name] = owned_map.get(item_name, 0) + qty
+        ctx.cultivate_detail.mant_owned_items = [(n, q) for n, q in owned_map.items() if q > 0]
+        log.info(f"Inventory updated after purchase: {dict(bought_items)}")
+        from module.umamusume.context import log_detected_items
+        log_detected_items(ctx.cultivate_detail.mant_owned_items)
+
     ctx.ctrl.click(EXCHANGE_CLOSE_X, EXCHANGE_CLOSE_Y)
     time.sleep(0.5)
 
     ctx.ctrl.click(BACK_BTN_X, BACK_BTN_Y)
     time.sleep(0.5)
 
-    return True, {}
+    return True, dict(bought_items)

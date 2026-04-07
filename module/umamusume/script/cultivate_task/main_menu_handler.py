@@ -144,7 +144,7 @@ def script_cultivate_main_menu(ctx: UmamusumeContext):
                         log.info("pal notification gone, resetting stage")
                         ctx.cultivate_detail.pal_event_stage = 0
 
-    if has_extra_race and not is_mant(ctx):
+    if has_extra_race:
         log.info("extra race this turn, prioritizing")
         if ctx.cultivate_detail.turn_info.turn_operation is None:
             ctx.cultivate_detail.turn_info.turn_operation = TurnOperation()
@@ -158,8 +158,6 @@ def script_cultivate_main_menu(ctx: UmamusumeContext):
             log.info("extra race not in available races")
         ctx.cultivate_detail.turn_info.parse_train_info_finish = True
         return
-    if has_extra_race and is_mant(ctx):
-        log.info("MANT: extra race available but scanning training first")
 
     if is_mant(ctx):
         from module.umamusume.scenario.mant.main_menu import handle_mant_main_menu
@@ -251,10 +249,8 @@ def script_cultivate_main_menu(ctx: UmamusumeContext):
         handle_mant_rival_race(ctx, img)
 
     if not ctx.cultivate_detail.turn_info.parse_train_info_finish:
-        limit = int(getattr(ctx.cultivate_detail, 'rest_threshold', getattr(ctx.cultivate_detail, 'rest_treshold', getattr(ctx.cultivate_detail, 'fast_path_energy_limit', 48))))
-        if has_extra_race and not is_mant(ctx):
-            ctx.cultivate_detail.turn_info.parse_train_info_finish = True
-            return
+        from module.umamusume.constants.scoring_constants import DEFAULT_REST_THRESHOLD
+        limit = int(getattr(ctx.cultivate_detail, 'rest_threshold', getattr(ctx.cultivate_detail, 'rest_treshold', getattr(ctx.cultivate_detail, 'fast_path_energy_limit', DEFAULT_REST_THRESHOLD))))
         if limit == 0:
             energy = 100
         else:
@@ -270,11 +266,19 @@ def script_cultivate_main_menu(ctx: UmamusumeContext):
                 if has_energy_recovery(ctx):
                     ctx.cultivate_detail.turn_info.energy_recovery_deferred = True
             else:
-                from module.umamusume.scenario.mant.inventory import handle_energy_recovery
-                if handle_energy_recovery(ctx):
-                    energy = getattr(ctx.cultivate_detail.turn_info, 'cached_energy', energy)
+                # Defer vita decision to training_select where stat check can be done
+                from module.umamusume.scenario.mant.inventory import has_energy_recovery
+                if has_energy_recovery(ctx):
+                    ctx.cultivate_detail.turn_info.energy_recovery_deferred = True
         if energy <= limit:
             if getattr(ctx.cultivate_detail.turn_info, 'energy_recovery_deferred', False):
+                base_energy, _, _ = scan_energy(ctx.ctrl)
+                ctx.cultivate_detail.turn_info.base_energy = base_energy
+                ctx.ctrl.click_by_point(TO_TRAINING_SELECT)
+                return
+            # Never rest when a custom race is scheduled — go to training select instead
+            if has_extra_race and is_mant(ctx):
+                log.info(f"Skipping rest: scheduled race available (energy={energy})")
                 base_energy, _, _ = scan_energy(ctx.ctrl)
                 ctx.cultivate_detail.turn_info.base_energy = base_energy
                 ctx.ctrl.click_by_point(TO_TRAINING_SELECT)

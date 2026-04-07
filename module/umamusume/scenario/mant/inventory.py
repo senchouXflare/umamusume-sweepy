@@ -995,7 +995,7 @@ def handle_energy_recovery(ctx):
     max_energy = getattr(ctx.cultivate_detail, 'mant_max_energy', 100)
 
     rest_threshold = getattr(ctx.cultivate_detail, 'rest_threshold',
-                    getattr(ctx.cultivate_detail, 'rest_treshold', 48))
+                    getattr(ctx.cultivate_detail, 'rest_treshold', 35))
     limit = max_energy * (rest_threshold / 100.0)
 
     owned = getattr(ctx.cultivate_detail, 'mant_owned_items', [])
@@ -1412,6 +1412,28 @@ def handle_megaphone_endgame(ctx):
     return False
 
 
+EMPOWERING_STAT_SUM_THRESHOLD = 50
+
+
+def get_best_training_stat_sum(ctx):
+    """Get the total stat gains from the best (chosen) training facility."""
+    op = getattr(ctx.cultivate_detail.turn_info, 'turn_operation', None)
+    if op is None:
+        return 0
+    training_type = getattr(op, 'training_type', None)
+    if training_type is None:
+        return 0
+    idx = (training_type.value if hasattr(training_type, 'value') else int(training_type)) - 1
+    if idx < 0 or idx >= 5:
+        return 0
+    try:
+        til = ctx.cultivate_detail.turn_info.training_info_list[idx]
+        stat_results = getattr(til, 'stat_results', {})
+        return sum(v for v in stat_results.values() if isinstance(v, (int, float)))
+    except Exception:
+        return 0
+
+
 def handle_megaphone(ctx):
     mant_cfg = getattr(ctx.task.detail.scenario_config, 'mant_config', None)
     if mant_cfg is None:
@@ -1424,15 +1446,30 @@ def handle_megaphone(ctx):
     if handle_megaphone_endgame(ctx):
         return True
 
-    percentile = get_stat_only_percentile(ctx)
-    if percentile is None:
-        return False
-
     owned = getattr(ctx.cultivate_detail, 'mant_owned_items', [])
     owned_map = {n: q for n, q in owned}
 
     active_tier = getattr(ctx.cultivate_detail, 'mant_megaphone_tier', 0)
     active_turns = getattr(ctx.cultivate_detail, 'mant_megaphone_turns', 0)
+
+    # --- Custom rule: auto-use Empowering Megaphone when stat sum > 50 ---
+    stat_sum = get_best_training_stat_sum(ctx)
+    if stat_sum >= EMPOWERING_STAT_SUM_THRESHOLD:
+        emp_qty = owned_map.get('Empowering Megaphone', 0)
+        if emp_qty > 0 and not (active_turns > 0 and active_tier >= 3):
+            ok = use_item_and_update_inventory(ctx, 'Empowering Megaphone')
+            if ok:
+                ctx.cultivate_detail.mant_megaphone_tier = 3
+                ctx.cultivate_detail.mant_megaphone_turns = 2
+                log.info(f"Empowering Megaphone auto-used: stat sum {stat_sum} > {EMPOWERING_STAT_SUM_THRESHOLD}")
+                from module.umamusume.persistence import save_megaphone_state
+                save_megaphone_state(3, 2)
+            return ok
+    # --- End custom rule ---
+
+    percentile = get_stat_only_percentile(ctx)
+    if percentile is None:
+        return False
 
     from module.umamusume.constants.game_constants import is_summer_camp_period
     is_summer = is_summer_camp_period(date)
@@ -1608,9 +1645,15 @@ def remaining_climax_races(date):
     return sum(1 for t in MANT_CLIMAX_RACE_TURNS if t >= date)
 
 
-def handle_cleat_before_race(ctx, race_id, is_climax_override=False):
-    from module.umamusume.constants.game_constants import SUMMER_CAMP_2_START
+MASTER_CLEAT_MIN_RESERVE = 2
 
+
+def handle_cleat_before_race(ctx, race_id, is_climax_override=False):
+    """Cleat Hammer usage:
+    - Master Cleat Hammer: always keep minimum 2 reserve. Use surplus on any race.
+    - Artisan Cleat Hammer: use only for G1 races (use all, no reserve).
+    - Climax races (74/76/78): use everything, no reserves.
+    """
     if getattr(ctx.cultivate_detail, 'mant_cleat_used', False):
         return False
 
@@ -1625,6 +1668,7 @@ def handle_cleat_before_race(ctx, race_id, is_climax_override=False):
     if master_qty + artisan_qty <= 0:
         return False
 
+    # Climax races: use everything, Master first
     if is_climax_race:
         if master_qty > 0:
             result = use_item_and_update_inventory(ctx, 'Master Cleat Hammer')
@@ -1638,66 +1682,26 @@ def handle_cleat_before_race(ctx, race_id, is_climax_override=False):
             return result
         return False
 
-    from module.umamusume.constants.game_constants import CLASSIC_YEAR_END, SENIOR_YEAR_END
     from module.umamusume.asset.race_data import is_g1_race
+    race_is_g1 = is_g1_race(race_id)
 
-    if date > SUMMER_CAMP_2_START:
-        total = master_qty + artisan_qty
-        if total <= 2:
-            return False
-        reserve_total = min(2, total)
-        reserve_master = min(master_qty, reserve_total)
-        spare_master = master_qty - reserve_master
-        spare_artisan = artisan_qty - (reserve_total - reserve_master)
-
-        is_senior = date <= SENIOR_YEAR_END
-
-        if is_senior and master_qty < 3 and spare_artisan > 0:
-            result = use_item_and_update_inventory(ctx, 'Artisan Cleat Hammer')
-            if result:
-                ctx.cultivate_detail.mant_cleat_used = True
-            return result
-
-        if spare_master > 0:
-            result = use_item_and_update_inventory(ctx, 'Master Cleat Hammer')
-            if result:
-                ctx.cultivate_detail.mant_cleat_used = True
-            return result
-        if spare_artisan > 0:
-            result = use_item_and_update_inventory(ctx, 'Artisan Cleat Hammer')
-            if result:
-                ctx.cultivate_detail.mant_cleat_used = True
-            return result
-        return False
-
-    if not is_g1_race(race_id):
-        return False
-
-    is_senior = CLASSIC_YEAR_END < date <= SENIOR_YEAR_END
-
-    if is_senior and master_qty < 3:
-        if artisan_qty > 0:
-            result = use_item_and_update_inventory(ctx, 'Artisan Cleat Hammer')
-            if result:
-                ctx.cultivate_detail.mant_cleat_used = True
-            return result
-        if master_qty > 0:
-            result = use_item_and_update_inventory(ctx, 'Master Cleat Hammer')
-            if result:
-                ctx.cultivate_detail.mant_cleat_used = True
-            return result
-        return False
-
-    if master_qty > 0:
+    # Master Cleat Hammer: use only if we have more than reserve (2)
+    spare_master = max(0, master_qty - MASTER_CLEAT_MIN_RESERVE)
+    if spare_master > 0:
         result = use_item_and_update_inventory(ctx, 'Master Cleat Hammer')
         if result:
             ctx.cultivate_detail.mant_cleat_used = True
+            log.info(f"Master Cleat used (reserve kept: {master_qty - 1}/{MASTER_CLEAT_MIN_RESERVE})")
         return result
-    if artisan_qty > 0:
+
+    # Artisan Cleat Hammer: use only for G1 races
+    if race_is_g1 and artisan_qty > 0:
         result = use_item_and_update_inventory(ctx, 'Artisan Cleat Hammer')
         if result:
             ctx.cultivate_detail.mant_cleat_used = True
+            log.info(f"Artisan Cleat used for G1 race")
         return result
+
     return False
 
 

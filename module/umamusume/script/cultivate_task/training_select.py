@@ -128,13 +128,7 @@ def script_cultivate_training_select(ctx: UmamusumeContext):
     ctx.cultivate_detail.turn_info.cached_energy = energy
 
     if energy <= limit and not mant_skip:
-        op = TurnOperation()
-        if should_use_pal_outing_simple(ctx):
-            op.turn_operation_type = TurnOperationType.TURN_OPERATION_TYPE_TRIP
-            ctx.cultivate_detail.turn_info.turn_operation = op
-            ctx.ctrl.click_by_point(RETURN_TO_CULTIVATE_MAIN_MENU)
-            return
-
+        # Race check FIRST — never rest/trip when a race is scheduled
         turn_info = ctx.cultivate_detail.turn_info
         date = turn_info.date
         from module.umamusume.asset.race_data import get_races_for_period
@@ -149,8 +143,16 @@ def script_cultivate_training_select(ctx: UmamusumeContext):
             except Exception:
                 pass
             if not skip_race:
+                log.info(f"Scheduled race found despite low energy ({energy}<={limit}) - skipping rest")
                 ctx.ctrl.click_by_point(RETURN_TO_CULTIVATE_MAIN_MENU)
                 return
+
+        op = TurnOperation()
+        if should_use_pal_outing_simple(ctx):
+            op.turn_operation_type = TurnOperationType.TURN_OPERATION_TYPE_TRIP
+            ctx.cultivate_detail.turn_info.turn_operation = op
+            ctx.ctrl.click_by_point(RETURN_TO_CULTIVATE_MAIN_MENU)
+            return
 
         log.info(f"rest threshold: energy={energy}, threshold={limit} - prioritizing rest")
         op = TurnOperation()
@@ -962,8 +964,27 @@ def script_cultivate_training_select(ctx: UmamusumeContext):
         try:
             if ctx.cultivate_detail.scenario.scenario_type() == ScenarioType.SCENARIO_TYPE_MANT:
                 if getattr(ctx.cultivate_detail.turn_info, 'energy_recovery_deferred', False):
-                    from module.umamusume.scenario.mant.inventory import handle_energy_recovery
-                    handle_energy_recovery(ctx)
+                    # Vita usage: only when race this turn + low energy, OR high stat training
+                    from module.umamusume.scenario.mant.inventory import handle_energy_recovery, get_best_training_stat_sum
+                    should_use_vita = False
+                    # Check if there's a race this turn
+                    try:
+                        _date = ctx.cultivate_detail.turn_info.date
+                        from module.umamusume.asset.race_data import get_races_for_period
+                        _available = get_races_for_period(_date)
+                        _has_race = any(r in _available for r in ctx.cultivate_detail.extra_race_list)
+                        if _has_race:
+                            should_use_vita = True
+                    except Exception:
+                        pass
+                    # Check if training stat sum is high
+                    if not should_use_vita:
+                        _stat_sum = get_best_training_stat_sum(ctx)
+                        if _stat_sum > 40:
+                            should_use_vita = True
+                            log.info(f"Vita: using for high stat training (stat sum {_stat_sum} > 40)")
+                    if should_use_vita:
+                        handle_energy_recovery(ctx)
                     ctx.cultivate_detail.turn_info.energy_recovery_deferred = False
 
                 ctx.cultivate_detail.turn_info._pre_item_tier = getattr(ctx.cultivate_detail, 'mant_megaphone_tier', 0)

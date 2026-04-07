@@ -106,6 +106,10 @@ def handle_mant_turn_start(ctx, current_date):
 def handle_mant_shop_scan(ctx, current_date):
     if ctx.cultivate_detail.mant_shop_scanned_this_turn:
         return False
+    # Skip shop scan during debut period
+    from module.umamusume.constants.game_constants import PRE_DEBUT_END
+    if current_date <= PRE_DEBUT_END:
+        return False
     from module.umamusume.scenario.mant.shop import (
         is_shop_scan_turn, scan_mant_shop, buy_shop_items,
         SHOP_ITEM_COSTS, SLUG_TO_DISPLAY, display_to_slug,
