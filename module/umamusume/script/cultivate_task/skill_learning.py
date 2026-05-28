@@ -516,46 +516,61 @@ def script_cultivate_learn_skill(ctx: UmamusumeContext):
         if i != (len(skill_list) - 1) and skill_list[i]["gold"] is True:
             skill_list[i]["subsequent_skill"] = skill_list[i + 1]["skill_name"]
 
-    skill_list = sorted(skill_list, key=lambda x: x["priority"])
     digits_pattern = re.compile(r"\D")
     img = ctx.ctrl.get_screen()
     total_skill_point_text = digits_pattern.sub("", ocr_line(img[400: 440, 490: 665]))
     total_skill_point = int(total_skill_point_text) if total_skill_point_text else 0
     log.info(f"Skill points available: {total_skill_point}")
 
-    target_skill_list = []
-    target_skill_list_raw = []
-    curr_point = 0
+    # --- Kisegami-style optimizer ---
+    from module.umamusume.script.cultivate_task.skill_optimizer import (
+        create_purchase_plan, filter_affordable_skills, flatten_priority_list
+    )
+
     skip_dc = getattr(ctx.cultivate_detail, 'skip_double_circle_unless_high_hint', False)
-    only_user = ctx.cultivate_detail.learn_skill_only_user_provided is True
     at_finish = ctx.cultivate_detail.cultivate_finish
 
-    for priority_level in range(len(learn_skill_list) + 1):
-        if only_user and not at_finish and priority_level > 0:
-            if priority_level >= len(learn_skill_list) or not learn_skill_list[priority_level]:
-                continue
+    # Flatten sweepy nested priority list to flat names
+    flat_priority = flatten_priority_list(learn_skill_list)
 
-        candidates = sorted(
-            [s for s in skill_list if s["priority"] == priority_level and s["available"]],
-            key=lambda s: -int(s.get("hint_level", 0))
-        )
+    # Load gold_skill_upgrades from config (if available)
+    gold_upgrades = {}
+    try:
+        gold_upgrades = getattr(ctx.cultivate_detail, 'gold_skill_upgrades', None) or {}
+        if not gold_upgrades:
+            sc = getattr(ctx.task.detail, 'scenario_config', None)
+            if sc:
+                gold_upgrades = getattr(sc, 'gold_skill_upgrades', None) or {}
+    except Exception:
+        gold_upgrades = {}
 
-        for skill in candidates:
-            if skip_dc and skill.get("is_double_circle", False) and int(skill.get("hint_level", 0)) < 4:
-                continue
-            if curr_point + skill["skill_cost"] > total_skill_point:
-                continue
-            curr_point += skill["skill_cost"]
-            target_skill_list.append(skill["skill_name"])
-            target_skill_list_raw.append(skill["skill_name_raw"])
-            log.info(f"Target: '{skill['skill_name']}' cost={skill['skill_cost']} spent={curr_point}")
-            if skill["gold"] and skill["subsequent_skill"]:
-                for k in range(len(skill_list)):
-                    if skill_list[k]["skill_name"] == skill["subsequent_skill"]:
-                        skill_list[k]["available"] = False
+    # Build purchase plan using Kisegami logic
+    purchase_plan = create_purchase_plan(
+        skill_list=skill_list,
+        priority_names=flat_priority,
+        gold_upgrades=gold_upgrades,
+        end_career=at_finish,
+        skip_dc=skip_dc,
+        dc_hint_min=4
+    )
+
+    # Filter by budget
+    affordable, total_cost, remaining_pts = filter_affordable_skills(purchase_plan, total_skill_point)
+
+    # Build target lists from affordable plan
+    target_skill_list = []
+    target_skill_list_raw = []
+    for skill in affordable:
+        target_skill_list.append(skill["skill_name"])
+        target_skill_list_raw.append(skill["skill_name_raw"])
+        # Mark base skill unavailable when gold is bought (backward compat)
+        if skill.get("gold") and skill.get("subsequent_skill"):
+            for k in range(len(skill_list)):
+                if skill_list[k]["skill_name"] == skill["subsequent_skill"]:
+                    skill_list[k]["available"] = False
 
     log.info(f"Final target skill list: {target_skill_list}")
-    log.info(f"Total skills to learn: {len(target_skill_list)}, points to spend: {curr_point}")
+    log.info(f"Total skills to learn: {len(target_skill_list)}, points to spend: {total_cost}")
 
     for skill in target_skill_list:
         ctx.task.detail.scenario_config.removeSkillFromResetList(skill)
